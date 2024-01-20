@@ -1,54 +1,80 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from llama_cpp import Llama
+from transformers import AutoTokenizer
 
-sql_prompt = """
-Instruction: You are sqlite3 expert. Given an input question, you create only a syntactically correct sqlite3 query and nothing else. 
-Unless the user specifies in the question a specific number of examples to obtain, query for at most 3 results using the LIMIT clause.
-You must query using all of the columns to answer the question. Wrap each column name in double quotes (") to denote them as delimited identifiers.
-Pay attention to use only the column names you can see in the tables below. 
-Be careful to not query for columns that do not exist. 
-Also, pay attention to which column is in which table.
-Pay attention to use today() function to get the current date, if the question involves "today".
-`ORDER BY` clause should always be after `WHERE` clause. 
-DO NOT add semicolon to the end of SQL. 
-Pay attention to the comment in table schema. 
-Make sure the name of the tables and columns that you are using are from the table schema.
-Make sure that you write only and only sql, nothing more nothing less.
 
-=== Table Schema ===
 
-CREATE TABLE "IrancellPackages" (
-	"package_name"	TEXT,
-	"package_id"	INTEGER,
-	"validity_period_days"	INTEGER, -- the package is usable for this number of days
-	"usable_time_start"	INTEGER, -- the start time of when the package becomes usable during the day
-	"usable_time_end"	INTEGER, -- the end time of when the package becomes usable during the day
-	"data_size_mb"	INTEGER, -- size of the package data in megabytes
-	PRIMARY KEY("package_id")
+
+checkpoint = "HuggingFaceH4/zephyr-7b-beta"
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+
+
+system_sql_prompt = """
+You are an sql expert, given an input you will only create a syntactically correct query. you won't chat with the user you will only
+create an appropriate sql query. you must query all of the columns using `*`. be careful not use names that don't exist in the table
+schema described below. pay attention to the comments in the table schema.
+make sure the name of the tables and columns that you are using are from the table schema.
+
+the table schema:
+CREATE TABLE "internetpackages" (
+	"id"	INTEGER NOT NULL,
+	"package_name"	VARCHAR(255) NOT NULL, -- name of the internet package
+	"days_available"	INTEGER NOT NULL, -- number of days the package will be available after purchase
+	"price"	INTEGER NOT NULL, -- price of the package in toman
+	"data_size_in_mb"	INTEGER NOT NULL, -- size of the internet data in mega bytes.
+	"vendor"	VARCHAR(255) NOT NULL, -- the vendor that is selling this internet package
+	"number_of_purchases"	INTEGER NOT NULL, -- number of purchases for this package
+	"price_per_mb"	REAL, -- price per mega byte ratio, showing how much the vendor is charging per mb
+	PRIMARY KEY("id")
 );
 
-Question: %s
-Output:
 """
 
-func_prompt = """
-As an AI assistant, please select the most suitable function and parameters from the list of available functions below, based on the user's input. Provide your response in JSON format.
+system_func_prompt = """
+Given the user's input you will return one of the functions below with its appropriate inputs in json format.
+use the following format for the json you return:
+{
+  "function": "function name",
+  "inputs": [
+    "input name": "value"
+  ]
+}
 
-Input: I want to know how many times 'Python' is mentioned in my text file.
-
-Available functions:
-query_database:
-  description: This function does selects on a table.
-  params:
-    action: The operation we want to perform on the data, such as "count_occurrences", "find_line", etc.
-    filters:
-      keyword: The word or phrase we want to search for.
+=== Available functions ===
+[
+  {
+    "function": "get_most_popular"
+    "inputs" : None
+  },
+  {
+    "function": "get_most_economic"
+    "inputs" : None
+  },
+  {
+    "function": "search_packages"
+    "inputs" : [
+      "days_available": "integer input like 3 or 4"
+      "lowest_price": "lowest price the user wants, can be None or an integer",
+      "highest_price": "highest price the user wants, can be None or an integer",
+      "vendor": "the vendor that the user wants to buy from, can be None or string",
+      "lowest_data_size": "lowest data size the user wants, should be in megabytes, can be None",
+      "highest_data_size": "highest data size the user wants, should be in megabytes, can be None",
+    ]
+  },
+  {
+    "function": "general_info_on_packages",
+    "inputs" None
+  }
+]
 
 """
 
 
-llm = Llama(model_path="./phi-2.gguf", n_ctx=2048, verbose=True)
+
+
+
+llm = Llama(model_path="./zeph.gguf", n_ctx=5000, verbose=True)
 
 app = Flask(__name__)
 
@@ -58,8 +84,21 @@ cors = CORS(app)
 def get_text():
     data = request.get_json()
     print(f"rcvd {data}")
-    response = llm.create_completion(sql_prompt%data['msg'])
-    
+    messages = [
+      {
+        "role": "system",
+        "content": system_func_prompt
+      },
+      {
+        "role": "user",
+        "content": data['msg'] + ".don't explain and ONLY return the appropriate json. if there are no functions approriate for it say 'I'm sorry, I don't know'"
+      }
+    ]
+    tokenized_chat = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+    preprocessed_chat = tokenizer.decode(tokenized_chat)
+    print(f"giving the following prompt to the llm:\n{preprocessed_chat}")
+    response = llm.create_completion(preprocessed_chat, max_tokens=128, temperature=0)
+    print(f"llm response:\n{response}")
     resp_msg = response['choices'][0]['text']
     print(f"sending back [{resp_msg}]")
     return jsonify({'msg': resp_msg}), 201

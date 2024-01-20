@@ -1,0 +1,8 @@
+isort
+black
+mypy
+ruff
+flask
+flask-cors
+llama-cpp-python
+git+https://github.com/huggingface/transformers.git
